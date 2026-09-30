@@ -335,11 +335,29 @@ kilometres from HB, and clock-time savings ("the city empties").
   "why", assumptions expander. Custom locations, multi-city averaging, heatmap, basemap
   switcher and the value-unlock model were removed (tag `v1-explorer`).
 
-### Data gaps that matter most (see ARCHITECTURE.md "Next data")
+### Attractiveness controls added (2026-09-30, same day)
 
-Attractiveness controls (elevation/sun, lake distance, noise, population growth) for the
-hedonic fit; building-zone reserves; targeted price re-scrape for interpolated
-municipalities near Zürich; highway-junction distance. No new PT or car scraping needed.
+Fetched from free sources for every settlement: elevation (swisstopo), distance to the
+nearest lake shore, motorway junction and motorway carriageway (OpenStreetMap via
+`overpass.osm.ch`), nearest major airport, and BFS population growth 2013–2023. Added as
+controls to the hedonic fit and as user-weightable factors in the UI ("Match" score).
+
+Zürich fit with controls (n = 585, R² 0.62 → 0.64):
+
+| Control | Coefficient (log price) | Reading |
+|---|---|---|
+| effective commute | −0.00165 / min (−1.6 % / 10 min) | part of the earlier distance effect was really lake & motorway access |
+| tax multiplier | −0.005 / point | unchanged, dominant |
+| log(1 + km to lake) | −0.056 | lake proximity is priced in |
+| log(1 + km to motorway junction) | −0.060 | motorway access is priced in |
+| within 1 km of a motorway | −0.07 | noise discount |
+| near an airport (< 8 km) | +1.23 | Glattal location premium dominates noise — kept as a control only |
+| population growth | ≈ 0 | not priced separately |
+| elevation | ≈ 0 | absorbed by the other controls |
+
+Consequence: the Value score's residual is now net of setting as well as commute, tax
+and canton. Remaining gaps: building-zone reserves, real noise exposure (BAFU), sunshine /
+slope aspect, amenities. No new PT or car scraping needed.
 
 ---
 

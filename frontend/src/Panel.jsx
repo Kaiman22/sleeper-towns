@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react'
-import { METRICS, NO_PRICE_LIMIT, rankRows, fmtMin, fmtChf, normalize } from './model'
+import { METRICS, FACTORS, NO_PRICE_LIMIT, rankRows, fmtMin, normalize } from './model'
 
 function Search({ rows, onPick }) {
   const [q, setQ] = useState('')
@@ -34,13 +34,16 @@ function Search({ rows, onPick }) {
   )
 }
 
-function Detail({ r, anchor, settings, onClose }) {
+function Detail({ r, anchor, settings, onClose, available }) {
+  const metric = METRICS[settings.metric]
+  const v = metric.get(r)
   const drivesToday = r.ptc == null || r.car <= r.ptc
   const why = !r.viable
     ? `Outside your ${settings.tolerance}-minute limit: the trip to ${anchor.name} still takes ~${Math.round(r.tAv)} minutes of effective time in a self-driving car.`
     : r.gain <= 0.5
     ? `Public transport to ${anchor.name} is already about as good as a self-driving car would feel here (${fmtMin(r.ptc)} effective vs ${fmtMin(r.tAv)}). Little to unlock.`
     : `Today the best way to ${anchor.name} is ${drivesToday ? `driving (${fmtMin(r.car)})` : `public transport (${fmtMin(r.pt)} door to door, ${fmtMin(r.ptc)} effective)`}. In a self-driving car the same ${fmtMin(r.car)} drive counts like ${fmtMin(r.tAv)} of usable time — an effective gain of ${fmtMin(r.gain)}. At the ${anchor.name} market's price gradient of −${anchor.pct_per_10min}% per 10 commute minutes that implies roughly +${r.uplift.toFixed(1)}%.`
+  const factors = (available || FACTORS).filter((f) => !['sleeper', 'price', 'commute'].includes(f.key))
   return (
     <div className="card">
       <div className="card-head">
@@ -50,10 +53,16 @@ function Detail({ r, anchor, settings, onClose }) {
         </div>
         <button className="x" onClick={onClose} aria-label="Close">×</button>
       </div>
-      <div className="hero">{!r.viable ? '—' : r.sleeper != null ? `${r.sleeper >= 0 ? '+' : ''}${r.sleeper.toFixed(0)}%` : `+${r.uplift.toFixed(1)}%`}</div>
+      <div className="hero">{r.viable && v != null ? metric.fmt(v) : '—'}</div>
       <div className="hero-label">
-        {r.sleeper != null ? 'Sleeper Score · discount to post-AV fair value' : 'expected AV uplift'}
-        {r.viable && ` · AV uplift +${r.uplift.toFixed(1)}%${r.gainChf != null ? ` (${Math.round(r.gainChf).toLocaleString('de-CH')} CHF/m²)` : ''}`}
+        {metric.label}{metric.unit === '/100' ? ' score' : ''}
+        {r.viable && (
+          <>
+            {settings.metric !== 'match' && r.match != null && ` · match ${Math.round(r.match)}`}
+            {settings.metric !== 'sleeper' && r.sleeper != null && ` · value ${r.sleeper >= 0 ? '+' : ''}${r.sleeper.toFixed(0)}%`}
+            {settings.metric !== 'uplift' && ` · AV uplift +${r.uplift.toFixed(1)}%`}
+          </>
+        )}
       </div>
       <div className="kv">
         <div><b>{r.price != null ? Math.round(r.price).toLocaleString('de-CH') : '—'}{r.src === 'interpolated' && <span className="est"> est.</span>}</b><span>CHF/m² today</span></div>
@@ -62,13 +71,19 @@ function Detail({ r, anchor, settings, onClose }) {
         <div><b>{fmtMin(r.car)}</b><span>car today</span></div>
         <div><b>{fmtMin(r.pt)}</b><span>PT door to door</span></div>
         <div><b>{fmtMin(r.tAv)}</b><span>feels like, in AV</span></div>
-        <div><b>{fmtMin(r.gain)}</b><span>effective gain</span></div>
-        <div><b>{r.tax != null ? `${r.tax}%` : '—'}</b><span>tax multiplier</span></div>
+      </div>
+      <div className="kv">
+        {factors.map((f) => {
+          const fv = f.get(r)
+          return (
+            <div key={f.key}><b>{fv != null ? f.fmt(fv) : '—'}</b><span>{f.short || f.label.split(' —')[0].toLowerCase()}</span></div>
+          )
+        })}
       </div>
       <div className="why">
         {why}
-        {r.viable && r.fairNow != null && (
-          <> Today it trades {Math.abs((r.price / r.fairNow - 1) * 100).toFixed(0)}% {r.price < r.fairNow ? 'below' : 'above'} what places with the same commute, tax and canton typically cost — the market fit explains only part of prices, so check attractiveness (lake, slope, noise, schools) yourself.</>
+        {r.viable && r.fairNow != null && r.src !== 'interpolated' && (
+          <> Today it trades {Math.abs((r.price / r.fairNow - 1) * 100).toFixed(0)}% {r.price < r.fairNow ? 'below' : 'above'} what places with the same commute, tax, setting and canton typically cost.</>
         )}
       </div>
     </div>
@@ -77,11 +92,17 @@ function Detail({ r, anchor, settings, onClose }) {
 
 export default function Panel({ data, rows, settings, setSettings, selectedId, setSelectedId, setHighlightId }) {
   const set = (patch) => setSettings((s) => ({ ...s, ...patch }))
+  const setWeight = (key, w) => setSettings((s) => ({ ...s, weights: { ...s.weights, [key]: w } }))
   const metric = METRICS[settings.metric]
   const anchor = data?.anchors[settings.anchor]
   const ranked = useMemo(() => rankRows(rows, settings.metric), [rows, settings.metric])
   const selected = selectedId ? rows.find((r) => r.id === selectedId) : null
   const viableCount = useMemo(() => rows.filter((r) => r.viable).length, [rows])
+  const available = useMemo(() => {
+    const cov = data?.meta?.factor_coverage || {}
+    return FACTORS.filter((f) => !(f.key === 'grow' && !cov.grow) && !(f.key === 'lake' && !cov.lake) && !(f.key === 'elev' && !cov.elev)
+      && !(f.key === 'quiet' && !(cov.mw && cov.air)) && !(f.key === 'access' && !cov.mwj))
+  }, [data])
 
   return (
     <div className="panel">
@@ -89,8 +110,9 @@ export default function Panel({ data, rows, settings, setSettings, selectedId, s
         <h1>Sleeper Towns</h1>
         <p>Where self-driving cars wake up Swiss property values.</p>
         <p className="how">
-          Pick where you commute to. We find places that are cheap today because the drive is long
-          and public transport is weak — exactly the commute a self-driving car turns into usable time.
+          Pick where you commute to and what matters to you. We find places that are cheap today because
+          the drive is long-ish and public transport is weak — the commute a self-driving car turns into
+          usable time — and rank them by your priorities.
         </p>
       </div>
 
@@ -116,6 +138,19 @@ export default function Panel({ data, rows, settings, setSettings, selectedId, s
           </div>
 
           <div className="field">
+            <label>What matters to you <span className="muted">0 = ignore · 5 = essential</span></label>
+            <div className="weights">
+              {available.map((f) => (
+                <div key={f.key} className="weight">
+                  <span>{f.label}</span>
+                  <input type="range" min="0" max="5" step="1" value={settings.weights?.[f.key] ?? 0} onChange={(e) => setWeight(f.key, +e.target.value)} />
+                  <b>{settings.weights?.[f.key] ?? 0}</b>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="field">
             <label>Color & rank by</label>
             <div className="seg">
               {Object.entries(METRICS).map(([k, m]) => (
@@ -128,7 +163,7 @@ export default function Panel({ data, rows, settings, setSettings, selectedId, s
           <Search rows={rows} onPick={setSelectedId} />
 
           {selected && anchor && (
-            <Detail r={selected} anchor={anchor} settings={settings} onClose={() => setSelectedId(null)} />
+            <Detail r={selected} anchor={anchor} settings={settings} available={available} onClose={() => setSelectedId(null)} />
           )}
 
           <div>
@@ -170,23 +205,22 @@ export default function Panel({ data, rows, settings, setSettings, selectedId, s
               {anchor && (
                 <p>
                   <b>Price gradient to {anchor.name}:</b> −{anchor.pct_per_10min}% per 10 minutes of effective commute,
-                  measured on {anchor.n} municipalities with market prices (within-canton hedonic fit
-                  {anchor.r2 != null ? `, R² ${anchor.r2}` : ''}).
+                  measured on {anchor.n} municipalities with market prices (within-canton hedonic fit with tax, elevation,
+                  lake / motorway / airport distance and population growth as controls{anchor.r2 != null ? `, R² ${anchor.r2}` : ''}).
                   {!anchor.fitted && ' The local fit was not robust, so the Zürich gradient is used as a fallback.'}
-                  {' '}This gradient — not a value-of-time assumption — converts effective commute gains into an expected uplift.
                 </p>
               )}
               <p>
-                <b>Method.</b> Effective commute today = min(car, PT with the train discount). In an AV the drive counts as
-                car × {settings.avFactor.toFixed(2)}. Gain = the difference. Places whose AV trip exceeds your limit are greyed out:
-                savings nobody can use never capitalize. The uplift is relative to today's market, holding everything else constant —
-                it ignores zoning reserves, rollout order and congestion, so treat it as a screening signal, not a forecast.
+                <b>Match.</b> Each weighted factor is turned into a percentile among the places within your limits (missing data
+                counts as neutral) and averaged with your weights. <b>Value</b> is the discount to the post-AV fair value; it
+                already nets out what the place "should" cost for its commute, tax and setting, so the remaining gap is either
+                mispricing or something the data cannot see — check the place yourself.
               </p>
               <p>
-                <b>Data.</b> Car times: Google routing. PT: SBB timetable, Monday 07:00 departures, door to door.
-                Prices: Neho hedonic estimates and Homegate listing medians per municipality; "est." = no market data,
-                interpolated from neighbours. Tax: ESTV. Source & methodology:{' '}
-                <a href="https://github.com/Kaiman22/sleeper-towns" target="_blank" rel="noreferrer">github.com/Kaiman22/sleeper-towns</a>
+                <b>Data.</b> Car times: Google routing. PT: SBB timetable, Monday 07:00 departures, door to door. Prices: Neho
+                hedonic estimates and Homegate listing medians per municipality ("est." = interpolated, excluded from Value).
+                Tax: ESTV. Elevation: swisstopo. Lakes, motorways, junctions: OpenStreetMap. Population: BFS.{' '}
+                <a href="https://github.com/Kaiman22/sleeper-towns" target="_blank" rel="noreferrer">Methodology & source</a>
               </p>
             </div>
           </details>

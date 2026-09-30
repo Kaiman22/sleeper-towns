@@ -50,6 +50,12 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .seg button:last-child { border-right: 0; }
 .seg button.on { background: var(--card); color: var(--text); font-weight: 600; }
 
+.weights { display: flex; flex-direction: column; gap: 4px; }
+.weight { display: grid; grid-template-columns: 1fr 90px 14px; gap: 8px; align-items: center; font-size: 12px; }
+.weight span { color: var(--muted); line-height: 1.2; }
+.weight b { text-align: right; font-variant-numeric: tabular-nums; }
+.weight input[type="range"] { margin: 0; }
+
 .list { display: flex; flex-direction: column; }
 .row {
   display: grid; grid-template-columns: 22px 1fr 34px 62px 64px; gap: 6px; align-items: center;

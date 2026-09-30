@@ -1,18 +1,26 @@
 """
-Build the lean data file for the Sleeper Towns frontend (v2).
+Build the lean data file for the Sleeper Towns frontend.
 
-For every settlement: location, price (+source), tax multiplier and, per anchor
-city, three raw travel-time inputs: car seconds, PT door-to-door seconds and PT
-in-vehicle seconds. The frontend derives everything else client-side.
+For every settlement: location, price (+source), tax, attractiveness factors and, per
+anchor city, three raw travel-time inputs: car seconds, PT door-to-door seconds and
+PT in-vehicle seconds. The frontend derives everything else client-side.
 
-Also estimates, per anchor, the empirical price gradient w.r.t. effective commute
-time from our own price data (hedonic OLS with canton fixed effects). The frontend
-uses that gradient to translate AV commute gains into an expected price uplift,
-replacing the earlier VTT × cap-rate assumptions with a number measured in the
-Swiss market itself.
+Also fits, per anchor, a hedonic price model on our own price data:
 
-PT source priority: 02g breakdown totals (clean, departure-based queries) over the
-legacy 02e file (contains ~7.6k heuristically corrected overnight pairs).
+    log(CHF/m²) ~ effective_commute_min + controls + canton FE
+
+Controls (transforms mirrored in frontend/src/model.js FEATURES): tax multiplier,
+elevation, lake distance, motorway-junction distance, motorway proximity, airport
+proximity, population growth. Missing control values are median-imputed; a control
+with < 60 % coverage among the fit rows is dropped for that anchor.
+
+The commute coefficient (β) converts AV commute gains into an expected uplift; the
+full fit gives each place a "fair value", whose gap to the actual price is the core
+of the Sleeper Score.
+
+Inputs (data/processed): settlement_points, settlement_travel_times_driving,
+settlement_pt_breakdown (primary PT) + settlement_travel_times_pt (fallback),
+prices, taxes, municipalities, settlement_attractiveness (optional), population (optional)
 
 Output: frontend/public/data/sleeper.json
 """
@@ -24,14 +32,34 @@ import numpy as np
 
 from config import CITIES, PROCESSED_DIR, FRONTEND_DATA_DIR
 
-PT_FACTOR_DEFAULT = 0.90   # used only for the regression's "effective commute" input
-MAX_CAR_MIN_FOR_FIT = 100  # relevant housing market around an anchor
+PT_FACTOR_DEFAULT = 0.90   # regression input only ("effective commute" today)
+MAX_CAR_MIN_FOR_FIT = 100  # the housing market that matters around an anchor
 MIN_OBS_FOR_FIT = 80
+MIN_FEATURE_COVERAGE = 0.6
 FALLBACK_BETA = -0.0024    # Zürich within-canton estimate, per minute of effective commute
 
 
-def load(name):
-    with open(PROCESSED_DIR / name, encoding="utf-8") as f:
+# --- Hedonic control features (keep in sync with model.js FEATURES) ---
+def _f(v, fn):
+    return fn(v) if v is not None else None
+
+
+FEATURES = {
+    "tax": lambda s: s.get("tax"),
+    "elev": lambda s: _f(s.get("elev"), lambda v: v / 1000),
+    "lake": lambda s: _f(s.get("lake"), lambda v: math.log1p(v)),
+    "mwj": lambda s: _f(s.get("mwj"), lambda v: math.log1p(v)),
+    "mw_near": lambda s: _f(s.get("mw"), lambda v: max(0.0, 1 - v)),
+    "air_near": lambda s: _f(s.get("air"), lambda v: max(0.0, 8 - v) / 8),
+    "grow": lambda s: s.get("grow"),
+}
+
+
+def load(name, optional=False):
+    path = PROCESSED_DIR / name
+    if optional and not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -43,6 +71,9 @@ def main():
     prices = load("prices.json")
     taxes = load("taxes.json")
     munis = {m["id"]: m for m in load("municipalities.json")}
+    attract = load("settlement_attractiveness.json", optional=True)
+    population = load("population.json", optional=True)
+    print(f"attractiveness: {len(attract)} settlements, population: {len(population)} municipalities")
 
     def travel(uuid, city):
         car = driving.get(uuid, {}).get(city)
@@ -51,17 +82,18 @@ def main():
             pt_total, ivt = bd["total_s"], bd["ivt_s"]
         else:
             pt_total, ivt = pt_legacy.get(uuid, {}).get(city), None
-        # Plausibility: drop PT when wildly off vs car (residual bad routings)
         if car and pt_total and car > 0 and (pt_total / car > 3.5 or pt_total / car < 1 / 3.5):
-            pt_total, ivt = None, None
+            pt_total, ivt = None, None  # residual bad routings
         return car, pt_total, ivt
 
-    out_settlements = []
+    out = []
     for i, s in enumerate(settlements):
         mid = s["municipality_id"]
         m = munis.get(mid, {})
         pr = prices.get(mid) or {}
         tx = taxes.get(mid) or {}
+        a = attract.get(s["uuid"], {})
+        pop = population.get(mid, {})
         t = {}
         for city in CITIES:
             car, pt_total, ivt = travel(s["uuid"], city)
@@ -70,7 +102,7 @@ def main():
             t[city] = [int(car), int(pt_total) if pt_total else None, int(ivt) if ivt else None]
         if not t:
             continue
-        out_settlements.append({
+        out.append({
             "id": f"s_{i}",
             "name": s["name"],
             "muni": s["municipality_name"],
@@ -81,21 +113,25 @@ def main():
             "price": pr.get("chf_per_m2"),
             "src": pr.get("type"),
             "tax": tx.get("multiplier"),
+            "elev": a.get("elev_m"),
+            "lake": a.get("lake_km"),
+            "mwj": a.get("mwj_km"),
+            "mw": a.get("mw_km"),
+            "air": a.get("airport_km"),
+            "grow": pop.get("growth_pct"),
             "t": t,
         })
 
-    # --- Hedonic gradient per anchor (municipality level, real prices only) ---
+    # --- Hedonic fit per anchor (municipality level: best-connected settlement, market prices only) ---
     anchors = {}
     for city, c in CITIES.items():
         best = {}
-        for s in out_settlements:
+        for s in out:
             tt = s["t"].get(city)
-            if not tt:
-                continue
-            if s["mid"] not in best or tt[0] < best[s["mid"]]["t"][city][0]:
+            if tt and (s["mid"] not in best or tt[0] < best[s["mid"]]["t"][city][0]):
                 best[s["mid"]] = s
         rows = []
-        for mid, s in best.items():
+        for s in best.values():
             if s["src"] in (None, "interpolated") or not s["price"] or s["tax"] is None:
                 continue
             car_s, pt_s, ivt_s = s["t"][city]
@@ -106,53 +142,70 @@ def main():
                 ptc = (ivt_s * PT_FACTOR_DEFAULT + (pt_s - ivt_s)) / 60 if ivt_s else pt_s * PT_FACTOR_DEFAULT / 60
             else:
                 ptc = math.inf
-            rows.append((min(car, ptc), s["tax"], s["kt"], math.log(s["price"])))
+            rows.append((min(car, ptc), s, math.log(s["price"])))
 
-        beta, r2, n, fitted, fit = FALLBACK_BETA, None, len(rows), False, None
+        n = len(rows)
+        beta, r2, fitted, fit = FALLBACK_BETA, None, False, None
         if n >= MIN_OBS_FOR_FIT:
-            cantons = sorted({r[2] for r in rows})
-            X = np.array([[1.0, r[0], r[1]] + [1.0 if r[2] == k else 0.0 for k in cantons[1:]] for r in rows])
-            y = np.array([r[3] for r in rows])
+            # controls with enough coverage, median-imputed
+            feat_names, cols, medians = [], [], {}
+            for name, fn in FEATURES.items():
+                vals = [fn(s) for _, s, _ in rows]
+                have = [v for v in vals if v is not None]
+                if len(have) < MIN_FEATURE_COVERAGE * n:
+                    continue
+                med = float(np.median(have))
+                feat_names.append(name)
+                medians[name] = round(med, 5)
+                cols.append([v if v is not None else med for v in vals])
+            cantons = sorted({s["kt"] for _, s, _ in rows})
+            X = np.column_stack(
+                [np.ones(n), np.array([r[0] for r in rows])]
+                + [np.array(col) for col in cols]
+                + [np.array([1.0 if s["kt"] == k else 0.0 for _, s, _ in rows]) for k in cantons[1:]]
+            )
+            y = np.array([r[2] for r in rows])
             b, *_ = np.linalg.lstsq(X, y, rcond=None)
             resid = y - X @ b
             r2 = float(1 - resid.var() / y.var())
-            if b[1] < 0:  # only accept an economically sensible (negative) gradient
+            if b[1] < 0:
                 beta, fitted = float(b[1]), True
-            # Full fit is kept regardless, so the frontend can compute each place's
-            # residual ("cheap or expensive for its access") = log(price) - prediction.
+            k = 2 + len(feat_names)
             fit = {
                 "alpha": round(float(b[0]), 5),
                 "beta": round(float(b[1]), 6),
-                "gamma": round(float(b[2]), 6),       # per tax-multiplier point
-                "fe": {k: round(float(v), 4) for k, v in zip(cantons[1:], b[3:])},
+                "coefs": {nm: round(float(v), 6) for nm, v in zip(feat_names, b[2:k])},
+                "medians": medians,
+                "fe": {kt: round(float(v), 4) for kt, v in zip(cantons[1:], b[k:])},
                 "sigma": round(float(resid.std()), 4),
             }
         anchors[city] = {
             "name": c["name"], "lat": c["lat"], "lon": c["lon"],
-            "beta": round(beta, 6),            # d log(price) / d minute of effective commute (uplift)
+            "beta": round(beta, 6),
             "pct_per_10min": round(100 * (1 - math.exp(beta * 10)), 1),
             "r2": round(r2, 3) if r2 is not None else None,
-            "n": n,
-            "fitted": fitted,
-            "fit": fit,
+            "n": n, "fitted": fitted, "fit": fit,
         }
+        coefs = fit["coefs"] if fit else {}
         print(f"{city:11s} n={n:4d} beta={beta:+.5f} ({anchors[city]['pct_per_10min']}%/10min) "
-              f"r2={r2 if r2 is None else round(r2, 2)} {'' if fitted else '[fallback]'}")
+              f"r2={'-' if r2 is None else round(r2, 2)} {'' if fitted else '[fallback]'} "
+              f"controls={ {k: round(v, 3) for k, v in coefs.items()} }")
 
     data = {
         "meta": {
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "n_settlements": len(out_settlements),
-            "gradient_model": "log(price/m2) ~ effective_commute_min + tax_multiplier + canton FE, "
-                              "municipalities with market prices within 100 car-min of anchor",
+            "n_settlements": len(out),
+            "gradient_model": "log(price/m2) ~ effective_commute_min + tax + elevation + lake/motorway/airport "
+                              "distance + population growth + canton FE; market prices within 100 car-min",
+            "factor_coverage": {k: sum(1 for s in out if s.get(k) is not None) for k in ["price", "tax", "elev", "lake", "mwj", "mw", "air", "grow"]},
         },
         "anchors": anchors,
-        "settlements": out_settlements,
+        "settlements": out,
     }
-    out = FRONTEND_DATA_DIR / "sleeper.json"
-    with open(out, "w", encoding="utf-8") as f:
+    path = FRONTEND_DATA_DIR / "sleeper.json"
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
-    print(f"Saved {out} ({out.stat().st_size / 1e6:.2f} MB, {len(out_settlements)} settlements)")
+    print(f"Saved {path} ({path.stat().st_size / 1e6:.2f} MB, {len(out)} settlements) coverage={data['meta']['factor_coverage']}")
 
 
 if __name__ == "__main__":
