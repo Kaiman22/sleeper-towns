@@ -287,6 +287,62 @@ corrections (mean abs. error ~13%).
 
 ---
 
+## v2 Rethink (2026-09-30): what actually makes a place an AV winner?
+
+Restated intention: find attractive, relatively cheap places around a major job
+center (Zürich first) that will be well connected once self-driving cars are
+mainstream. That is a single-anchor home-search question, not a 10-city average.
+
+### Empirical audit on our own price data (Zürich anchor, 585 municipalities with market prices within 100 car-min)
+
+| Model (log CHF/m²) | R² | car / effective commute | PT deficit | tax multiplier |
+|---|---|---|---|---|
+| ~ t_now + tax, no canton FE | 0.07 | −4.7 % / 10 min (t −6.6) | — | n.s. |
+| ~ car + PT-gap + tax, no FE | 0.19 | −7.2 % / 10 min (t −10.6) | **+3.9 % / 10 min (wrong sign)** | −0.2 %/pt |
+| ~ car + PT-gap + tax + **canton FE** | **0.62** | −4.0 % / 10 min (t −5.3) | **−2.2 % / 10 min (t −1.9)** | −0.57 %/pt (t −15) |
+| ~ t_now + tax + canton FE | 0.61 | −2.4 % / 10 min (t −3.6) | — | −0.59 %/pt |
+
+Reading:
+1. **Commute time is priced in, but modestly** (−2.4 to −4 % per 10 minutes within a canton).
+2. **The "PT discount" exists but is small** (−2.2 % per 10 min of PT deficit, borderline
+   significant) and only visible after controlling for canton — the raw sign is positive
+   because low-tax, car-oriented cantons (SZ, ZG) are expensive.
+3. **Tax and canton dominate prices** (a 20-point Steuerfuss difference ≈ −11 %). For
+   "attractive and cheap", the tax multiplier is a first-order lever; AV is a second-order
+   tailwind of roughly +3 to +8 % for the best-positioned places, not a rocket.
+4. Ranking by uplift alone is degenerate: uplift is monotone in car time, so every place
+   sitting exactly at the commute limit ties at the maximum (+6.1 % for Zürich/45 min).
+
+Second opinion (Grok 4.7, scenario analysis) agreed on mechanism and added the
+discriminators we cannot yet measure: building-zone reserves (RPG), robotaxi rollout
+geography (inner exurban ring first, deep periphery last), congestion (AVs don't shorten
+queues), and disamenities AVs don't fix (airport/highway noise). Commonly overrated:
+kilometres from HB, and clock-time savings ("the city empties").
+
+### Decisions
+
+- **One anchor at a time**, Zürich default; the commute limit is a hard filter (grey out).
+- **Uplift from a measured gradient**, not VTT × cap rate: `uplift = exp(|β|·gain) − 1`
+  with β fitted per anchor (canton FE). Fallback to the Zürich β where the local fit is
+  not robust (Bern, Biel, St. Gallen, Lugano — polycentric markets, flagged in the UI).
+- **Sleeper Score = discount to post-AV fair value**: hedonic fair value today × (1 +
+  uplift) ÷ actual price. This breaks the boundary-ring tie and rewards places that are
+  cheap for their (future) access. Interpolated prices are excluded (phantom discounts).
+- **PT source switched** to the clean 02g breakdown totals (departure-based); the
+  heuristically corrected 02e file is fallback only.
+- **Website reduced to the essentials**: anchor, commute limit, price limit, one score
+  with two alternative views, search, top-15 list, detail card with a plain-language
+  "why", assumptions expander. Custom locations, multi-city averaging, heatmap, basemap
+  switcher and the value-unlock model were removed (tag `v1-explorer`).
+
+### Data gaps that matter most (see ARCHITECTURE.md "Next data")
+
+Attractiveness controls (elevation/sun, lake distance, noise, population growth) for the
+hedonic fit; building-zone reserves; targeted price re-scrape for interpolated
+municipalities near Zürich; highway-junction distance. No new PT or car scraping needed.
+
+---
+
 ## Architecture Decisions
 
 | Decision | Choice | Rationale |
