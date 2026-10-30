@@ -1,69 +1,68 @@
 # Sleeper Towns 🚗💤
 
-**Where self-driving cars wake up Swiss property values.**
+**Welche Orte macht das selbstfahrende Auto pendelbar?**
 
-Pick the city you commute to (Zürich by default). The map finds settlements that are
-cheap today because the drive is long-ish and public transport is weak — exactly the
-commute a self-driving car turns into usable time.
+Pick the city you commute to. The map shows every Swiss settlement that is out of
+commuting range today and drops below it once the car drives itself: the places that
+*kippen* (flip).
 
 **Live:** https://kaiman22.github.io/sleeper-towns/
 
 ## Why "Sleeper Towns"?
 
-1. **Investment slang** — a "sleeper" is an undervalued asset nobody noticed yet.
-2. **Swiss German** — commuter villages are literally *Schlafgemeinden*.
-3. **Literally** — in an autonomous car you can sleep, work or read through the commute.
+1. **Swiss German**: commuter villages are literally *Schlafgemeinden*.
+2. **Literally**: in an autonomous car you can sleep, work or read through the commute.
 
 ## The model (all of it)
 
-Per settlement and anchor city, three measured inputs: car minutes, PT door-to-door
-minutes, PT in-vehicle minutes.
+Per settlement and destination, two queried numbers: car minutes and PT minutes.
 
 ```
-ptComfort = ivt × ptFactor + walk + wait        train time counts less than driving
-tNow      = min(car, ptComfort)                  today's best effective commute
-tAv       = car × avFactor                       the same drive in a self-driving car
-gain      = max(0, tNow − min(tAv, ptComfort))   effective minutes AV takes off the commute
-uplift    = exp(|β| × gain) − 1                  β = price gradient per commute minute,
-                                                 measured on our own price data (hedonic OLS
-                                                 with canton fixed effects, per anchor city)
-fairNow   = hedonic fair value today (commute, tax, elevation, lake / motorway /
-                                                 airport distance, population growth, canton)
-Sleeper   = fairNow × (1 + uplift) / price − 1   discount to post-AV fair value
-Match     = weighted percentile score over the factors YOU weight: value, price,
-            commute, taxes, lake, elevation, quiet, motorway access, growth
+today    = min(car, pt)          best option today
+av       = car / comfort         effective time in a self-driving car (comfort default 1.5)
+tomorrow = min(pt, av)           best option once the car drives itself
+
+TODAY    today ≤ threshold                       commutable already
+FLIP     today > threshold and tomorrow ≤ it     becomes commutable ("kippt")
+FAR      tomorrow > threshold                    stays out of range
 ```
 
-Places whose AV trip exceeds your commute limit are greyed out: savings nobody can
-use never capitalize into property value. The gradient replaces value-of-time and
-cap-rate assumptions with a number measured in the Swiss market (Zürich: −2.4 % per
-10 minutes of effective commute, R² 0.61 on 585 municipalities).
+The autonomous car is always compared against **today's best option**, never against
+driving yourself. Threshold (default 45 min) and comfort factor (default 1.5) are sliders.
+One switch, «mit autonomem Auto», flips the map between today and tomorrow.
 
-The score is a **screening signal, not a forecast**: it ignores zoning reserves,
-robotaxi rollout order, congestion and attractiveness (lake, slope, noise, schools).
-A cheap town is sometimes cheap for a reason — check that yourself.
+Defaults, Zürich HB as destination: 336 settlements commutable today, 615 flip (×2.8).
+The comfort factor drives the result: at 1.25 only 255 flip.
 
-## Data
+## Data: queried, not estimated
 
-- 3,958 settlement points in 2,069 municipalities (swissNAMES3D)
-- Car times: Google routing to 10 reference cities
-- PT times: SBB timetable (transport.opendata.ch), Monday 07:00 departures, door to door, with walk/wait/in-vehicle split
-- Prices: Neho hedonic estimates (primary) + Homegate listing medians; municipalities without market data are
-  interpolated from neighbours ("est.") and excluded from the Sleeper Score
-- Tax: ESTV municipal multipliers
-- Elevation: swisstopo height service · Lakes, motorways, junctions: OpenStreetMap (Overpass) ·
-  Airports: ZRH/GVA/BSL · Population growth 2013–2023: BFS STAT-TAB
+Every travel time is a direct answer from a routing service, in the commuting direction,
+from the same point for both modes: the settlement point (swissNAMES3D) to the main
+station of the destination. No distance model, no correction factor, no interpolation.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the pipeline and [RESEARCH.md](RESEARCH.md) for the
-data-source research and the empirical audit behind the model.
+- **Car**: Google Maps Routes API, `TRAFFIC_AWARE`, departure Tuesday 07:30
+  (`02h_fetch_driving_times_google.py`). Car-free places (Zermatt, Wengen, ...) have no
+  car time and cannot flip.
+- **PT**: SBB timetable 2026 via transport.opendata.ch, fastest of the next four
+  connections from Monday 07:00, door to door incl. walks, transfers and transfer waits,
+  no wait before the first departure (`02g_fetch_pt_breakdown.py`).
+- **Places**: 3,859 settlements with ≥ 100 residents (swissNAMES3D), complete coverage
+  for all 10 destinations: Zürich, Bern, Basel, Genève, Lausanne, Luzern, St. Gallen,
+  Winterthur, Lugano, Biel/Bienne.
+
+Not modelled: parking, induced AV traffic, cost, destinations other than the main station,
+cross-border commuters. More destinations need a new Google + SBB run each
+(~3,900 queries per destination and mode).
+
+The earlier property-price version (hedonic fair value, Sleeper Score, Match) is in git
+history at commit `02c37e2`; its pipeline (`data/scripts/01–09`) still works and can come
+back as an optional layer.
 
 ## Run
 
 ```bash
 cd frontend && npm install && npm run dev        # local
-python3 data/scripts/08_fetch_attractiveness.py  # elevation + OSM distances (cached)
-python3 data/scripts/09_fetch_population.py      # BFS population growth
-python3 data/scripts/07_build_sleeper_data.py    # rebuild data + hedonic fits
+python3 data/scripts/10_build_commute_data.py    # rebuild commute.json from data/processed
 ```
 
 Deploys to GitHub Pages via `gh workflow run deploy.yml --ref main` (the push trigger is disabled).
