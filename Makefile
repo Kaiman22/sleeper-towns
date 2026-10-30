@@ -16,7 +16,7 @@ SCRIPTS_DIR := data/scripts
 PROCESSED_DIR := data/processed
 FRONTEND_DIR := frontend
 
-.PHONY: pipeline scores travel-times travel-pt travel-driving travel-driving-geoapify prices taxes frontend validate clean help
+.PHONY: commute-data pipeline scores travel-times travel-pt travel-driving travel-driving-geoapify prices taxes frontend validate clean help
 
 help:
 	@echo "Autonomy Explorer Pipeline"
@@ -32,6 +32,7 @@ help:
 	@echo "  merge-prices    Step 3b: Merge price sources"
 	@echo "  taxes           Step 4: Fetch tax data"
 	@echo "  scores          Step 5: Compute scores + export GeoJSON"
+	@echo "  commute-data    v3 site data from 02h + 02g (the only step the site needs)"
 	@echo "  frontend        Build frontend for deployment"
 	@echo "  deploy          Deploy to GitHub Pages"
 	@echo "  validate        Run data quality checks"
@@ -94,6 +95,12 @@ taxes:
 scores:
 	@echo "=== Step 5: Computing scores + exporting GeoJSON ==="
 	cd $(SCRIPTS_DIR) && python 05_compute_scores.py
+
+# ── Commute data (v3 site) ──
+
+commute-data:
+	@echo "=== Building frontend/public/data/commute.json (Google car + SBB PT) ==="
+	python3 $(SCRIPTS_DIR)/10_build_commute_data.py
 
 # ── Frontend ──
 

@@ -359,6 +359,77 @@ Consequence: the Value score's residual is now net of setting as well as commute
 and canton. Remaining gaps: building-zone reserves, real noise exposure (BAFU), sunshine /
 slope aspect, amenities. No new PT or car scraping needed.
 
+## v3 (2026-10-30): one message — which places become commutable?
+
+The v2 site answered too many questions at once (fair value, uplift, Match weights). v3
+keeps exactly one: *which places are out of commuting range today and drop below it with
+a self-driving car?* Property prices are out; they can return as an optional layer.
+
+Model: `av = car / comfort`, compared against `min(car, pt)`, never against driving
+yourself. A place *flips* when today > threshold ≥ min(pt, av). Defaults 1.5 and 45 min.
+No PT comfort factor (v2 had `ptFactor` 0.9 on in-vehicle time): simpler, but it favours
+the AV, since train time is usable too.
+
+### Which travel times? Queried beats modelled
+
+First draft used the Faster by Train matrices (any municipality as destination). Audit
+against this repo's directly queried data on identical pairs (2,069 municipalities × 10
+cities, origin = settlement nearest the Faster by Train anchor, median 0.46 km apart):
+
+| City | car: FbT − Google, median | car \|Δ\| p90 | PT: FbT − SBB, median | PT \|Δ\| p90 |
+|---|---|---|---|---|
+| Zürich | −8.8 min | 16.5 | +4.0 | 15 |
+| Genève | −13.8 | 19.7 | +4.0 | 20 |
+| Bern | +2.1 | 9.5 | +4.0 | 17 |
+| Basel | −0.5 | 6.3 | +7.0 | 19 |
+| Luzern | +4.8 | 10.9 | +7.0 | 18 |
+| Biel | +5.6 | 12.6 | +4.0 | 17 |
+
+(pairs up to 120 min). Causes:
+- **Car**: Faster by Train is free-flow OSRM times one global, duration-dependent
+  correction factor fitted against these same Google times. Pooled, the residual is ~5 %;
+  per city it is biased, because congestion is local (Zürich and Genève too fast, Biel and
+  Luzern too slow).
+- **PT**: MOTIS one-to-all durations count from the query time, so they include the wait
+  for the first departure (Bern → Zürich 71 min vs 56 min timetabled ride).
+
+Effect on the result (municipality level, T = 45, comfort 1.5, today / flipped):
+
+| City | modelled (FbT) | queried (Google + SBB) | flipped in both |
+|---|---|---|---|
+| Zürich | 275 / 387 | 193 / 299 | 209 |
+| Genève | 99 / 128 | 84 / 56 | 40 |
+| Bern | 270 / 383 | 326 / 402 | 293 |
+| Basel | 155 / 350 | 153 / 339 | 323 |
+| Lausanne | 259 / 207 | 219 / 225 | 183 |
+| Luzern | 152 / 403 | 201 / 406 | 329 |
+
+For Zürich almost half of the modelled flips are wrong one way or the other; for Genève
+the modelled data more than doubles them. Decision: **only queried times**: Google
+`TRAFFIC_AWARE` (02h) and the SBB timetable (02g), both from the settlement point to the
+city's main station. That limits destinations to the 10 cities queried so far and puts the
+map on settlements (3,859) instead of municipalities, since that is the level at which
+the times were queried.
+
+### Sensitivity (settlements, today / flipped)
+
+| Destination | default | comfort 1.25 | comfort 2.0 | T = 30 | T = 60 |
+|---|---|---|---|---|---|
+| Zürich | 336 / 615 | 336 / 255 | 336 / 1277 | 73 / 212 | 782 / 831 |
+| Bern | 627 / 655 | 627 / 270 | 627 / 1419 | 164 / 455 | 1076 / 970 |
+| Basel | 166 / 499 | 166 / 146 | 166 / 1245 | 51 / 112 | 434 / 977 |
+| Genève | 113 / 71 | 113 / 26 | 113 / 317 | 54 / 56 | 166 / 264 |
+| Lausanne | 322 / 454 | 322 / 146 | 322 / 911 | 100 / 216 | 567 / 666 |
+| Luzern | 352 / 561 | 352 / 214 | 352 / 1487 | 112 / 238 | 688 / 1151 |
+| St. Gallen | 358 / 349 | 358 / 174 | 358 / 676 | 130 / 227 | 603 / 431 |
+| Winterthur | 449 / 426 | 449 / 173 | 449 / 1023 | 161 / 282 | 701 / 771 |
+| Lugano | 195 / 64 | 195 / 43 | 195 / 83 | 118 / 77 | 248 / 30 |
+| Biel/Bienne | 444 / 770 | 444 / 286 | 444 / 1582 | 162 / 280 | 885 / 1141 |
+
+Reading: the comfort factor is the lever. 1.5 → 1.25 cuts the flips by 50–70 % (Lugano
+33 %), 1.5 → 2.0 doubles them or more. The data is no longer the weak point; the
+assumption is.
+
 ---
 
 ## Architecture Decisions
